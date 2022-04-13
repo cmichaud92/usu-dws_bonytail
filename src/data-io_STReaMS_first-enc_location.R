@@ -1,0 +1,170 @@
+
+#######################################################
+#          Data io: Fetch data from STReaMS           #
+#######################################################
+
+# Fetch data from STReaMS
+
+# ----- Attach Packages -----
+{
+  library(tidyverse)
+  library(dbplyr)
+  library(lubridate)
+  library(DBI)
+  library(UCRBtools)
+  library(ggplot2)
+}
+
+theme_set(theme_bw())
+#----------------------------------------
+# Enter user defined variables
+#----------------------------------------
+# Define hydro area for initial tag deployment
+HYDRO_AREA <- c("SR", "PR", "WH", "DO")
+YEAR <- c(2016:2022)
+TARGET <- "BT"
+
+
+CONFIG <-  "live_site"  # Comment out to access the test-site
+#MACHINE <- "FWS"
+MACHINE <- "CNHP"
+
+#----------------------------------------
+# Fetch configuration
+#----------------------------------------
+
+if (MACHINE == "FWS") {
+  CONFIG_PATH <-  "C:/Users/cmichaud/OneDrive - DOI/Documents/Projects/etc/config_streams.yml"
+} else if (MACHINE == "CNHP") {
+  CONFIG_PATH <- "/Users/jstahli/Documents/etc/config_streams.yml"
+}
+
+if(exists("CONFIG")) {
+
+  Sys.setenv(R_CONFIG_ACTIVE = CONFIG)
+  config <- config::get(file = CONFIG_PATH)
+
+} else {
+
+  config <- config::get(file = CONFIG_PATH)
+
+}
+
+
+#----------------------------------------
+# Establish STReaMS connection
+#----------------------------------------
+
+con <- dbConnect(odbc::odbc(),
+                 Driver = config$driver,
+                 Server = config$server,
+                 UID    = config$uid,
+                 PWD    = config$pwd,
+                 Port   = config$port,
+                 Database = config$database
+)
+
+# dbDisconnect(con)
+
+#-------------------------------------------
+# Create pointers to requisite tables
+#-------------------------------------------
+
+# Encounter Type table
+p_enc_typ <- tbl(con, "D_EncounterType") %>%
+  rename(EncounterTypeID = ID)
+
+# Species table
+p_spp <- tbl(con, "LKU_Species") %>%
+  select(SpeciesID = ID,
+         SpeciesCode = Code,
+         SpeciesName = CommonName) %>%
+  filter(SpeciesCode %in% TARGET)
+
+# PIA table
+# p_loc_typ <- tbl(con, "LKU_PIALocationType") %>%
+#   select(PIALocationTypeID = ID,
+#          HabitatType = Name)
+
+# p_loc <- tbl(con, "TBL_PIALocation") %>%
+#   left_join(p_loc_typ, by = "PIALocationTypeID") %>%
+#   select(PIALocationID = ID,
+#          PIAStartDate = StartDate,
+#          PIAEndDate = EndDate)
+
+p_ant <- tbl(con, "TBL_PIAAntenna") %>%
+  rename(AntennaID = ID)
+
+p_array <- tbl(con, "TBL_PIAArray") %>%
+  rename(ArrayID = ID) %>%
+  left_join(p_ant, by = c("ArrayID" = "PIAArrayID")) #%>%
+  # left_join(p_loc, by = "PIALocationID") %>%
+  # select(ArrayID, AntennaID, PIALocationID,
+  #        PIAName = Name)
+
+
+# Gear table
+p_gear_typ <- tbl(con, "LKU_GearType") %>%
+  rename(GearTypeID = ID,
+         GearTypeCode = Code,
+         GearTypeName = Name,
+         GearDefID = GearType) #%>% collect
+
+p_gear_def <- tbl(con, "D_GearType") %>%
+  rename(GearDefID = ID,
+         GearDefName = GearType)
+
+p_gear <- p_gear_typ %>%
+  left_join(p_gear_def, by = "GearDefID")
+
+# Hydro-areas table
+p_hydro <- tbl(con, "LKU_HydroArea") %>%
+  select(HydroAreaID = ID,
+         HydroAreaCode = Code,
+         HydroAreaName = Name) %>%
+  filter(HydroAreaCode %in% HYDRO_AREA)
+
+# Individual table
+p_indiv <- tbl(con, "TBL_Individual") %>%
+  select(IndividualID = ID,
+         SpeciesID) %>%
+  inner_join(p_spp, by = "SpeciesID")
+
+
+# Encounter table
+ind_ids <- tbl(con, "TBL_Encounter") %>%
+  rename(EncounterTypeID = EncounterType,
+         HydroAreaID = RiverID) %>%
+  inner_join(p_hydro, by = c("HydroAreaID")) %>%
+  inner_join(p_enc_typ, by = "EncounterTypeID") %>%
+  mutate(Year = year(EncounterDateTime)) %>%
+  filter(Year %in% YEAR) %>%
+  pull(IndividualID)
+
+
+tmp_trib <- tbl(con, "TBL_Encounter") %>%
+  rename(EncounterTypeID = EncounterType,
+         HydroAreaID = RiverID) %>%
+  filter(IndividualID %in% ind_ids) %>%
+  inner_join(p_hydro, by = c("HydroAreaID")) %>%
+  inner_join(p_enc_typ, by = "EncounterTypeID") %>%
+  inner_join(p_indiv, by = "IndividualID") %>%
+  left_join(p_array, by = "AntennaID") %>%
+  left_join(p_gear, by = "GearTypeID") %>%
+  mutate(Year = year(EncounterDateTime)) %>%
+  select(EncounterID = ID,
+         IndividualID,
+         Year,
+         EncounterDateTime,
+         HydroAreaCode,
+         RiverMile,
+         EncounterType,
+         FirstCapture,
+         Length,
+         Weight,
+         GearTypeCode,
+         SpeciesCode,
+         SpeciesName,
+         PIAName) %>%
+  collect()
+
