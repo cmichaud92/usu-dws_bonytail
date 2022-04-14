@@ -34,7 +34,7 @@ MACHINE <- "CNHP"
 #----------------------------------------
 
 if (MACHINE == "FWS") {
-  CONFIG_PATH <-  "C:/Users/cmichaud/OneDrive - DOI/Documents/Projects/etc/config_streams.yml"
+  CONFIG_PATH <-  "C:/Users/cmichaud/Projects_git/etc/config_streams.yml"
 } else if (MACHINE == "CNHP") {
   CONFIG_PATH <- "/Users/jstahli/Documents/etc/config_streams.yml"
 }
@@ -81,26 +81,40 @@ p_spp <- tbl(con, "LKU_Species") %>%
          SpeciesName = CommonName) %>%
   filter(SpeciesCode %in% TARGET)
 
+# Hydro-areas table
+p_hydro <- tbl(con, "LKU_HydroArea") %>%
+  select(HydroAreaID = ID,
+         HydroAreaCode = Code,
+         HydroAreaName = Name) %>%
+  filter(HydroAreaCode %in% HYDRO_AREA)
+
 # PIA table
 # p_loc_typ <- tbl(con, "LKU_PIALocationType") %>%
 #   select(PIALocationTypeID = ID,
 #          HabitatType = Name)
 
-# p_loc <- tbl(con, "TBL_PIALocation") %>%
-#   left_join(p_loc_typ, by = "PIALocationTypeID") %>%
-#   select(PIALocationID = ID,
-#          PIAStartDate = StartDate,
-#          PIAEndDate = EndDate)
+p_loc <- tbl(con, "TBL_PIALocation") %>%
+#  left_join(p_loc_typ, by = "PIALocationTypeID") %>% collect
+  select(PIALocationID = ID,
+         RiverID) %>% collect
 
 p_ant <- tbl(con, "TBL_PIAAntenna") %>%
-  rename(AntennaID = ID)
+  select(PIAAntennaID = ID,
+         PIAArrayID) %>% collect
 
 p_array <- tbl(con, "TBL_PIAArray") %>%
-  rename(ArrayID = ID) %>%
-  left_join(p_ant, by = c("ArrayID" = "PIAArrayID")) #%>%
-  # left_join(p_loc, by = "PIALocationID") %>%
-  # select(ArrayID, AntennaID, PIALocationID,
-  #        PIAName = Name)
+  rename(PIAArrayID = ID) %>% #collect
+  left_join(p_ant, by = "PIAArrayID") %>%
+  left_join(p_loc, by = "PIALocationID") %>%
+  select(PIAArrayID,
+         PIAAntennaID,
+         PIALocationID,
+         PIAName = Name,
+         PIARiverID = RiverID,
+         PIARiverMile = RiverMile,
+         PIAUTMX = UTMX,
+         PIAUTMY = UTMY,
+         PIADBANotes = DBANotes)
 
 
 # Gear table
@@ -117,12 +131,6 @@ p_gear_def <- tbl(con, "D_GearType") %>%
 p_gear <- p_gear_typ %>%
   left_join(p_gear_def, by = "GearDefID")
 
-# Hydro-areas table
-p_hydro <- tbl(con, "LKU_HydroArea") %>%
-  select(HydroAreaID = ID,
-         HydroAreaCode = Code,
-         HydroAreaName = Name) %>%
-  filter(HydroAreaCode %in% HYDRO_AREA)
 
 # Individual table
 p_indiv <- tbl(con, "TBL_Individual") %>%
@@ -131,27 +139,29 @@ p_indiv <- tbl(con, "TBL_Individual") %>%
   inner_join(p_spp, by = "SpeciesID")
 
 
-# Encounter table
+# Fetch IDs of all individual
 ind_ids <- tbl(con, "TBL_Encounter") %>%
   rename(EncounterTypeID = EncounterType,
          HydroAreaID = RiverID) %>%
   inner_join(p_hydro, by = c("HydroAreaID")) %>%
-  inner_join(p_enc_typ, by = "EncounterTypeID") %>%
+  inner_join(p_indiv, by = "IndividualID") %>%
   mutate(Year = year(EncounterDateTime)) %>%
   filter(Year %in% YEAR) %>%
-  pull(IndividualID)
+  distinct(IndividualID)
 
 
 tmp_trib <- tbl(con, "TBL_Encounter") %>%
   rename(EncounterTypeID = EncounterType,
          HydroAreaID = RiverID) %>%
-  filter(IndividualID %in% ind_ids) %>%
-  inner_join(p_hydro, by = c("HydroAreaID")) %>%
+  inner_join(p_indiv, by = "IndividualID") %>%
+#  filter(IndividualID %in% ind_ids) %>%
+  left_join(p_hydro, by = c("HydroAreaID")) %>%
   inner_join(p_enc_typ, by = "EncounterTypeID") %>%
   inner_join(p_indiv, by = "IndividualID") %>%
-  left_join(p_array, by = "AntennaID") %>%
+  left_join(p_array, by = c("AntennaID" = "PIAAntennaID")) %>%
   left_join(p_gear, by = "GearTypeID") %>%
   mutate(Year = year(EncounterDateTime)) %>%
+  head() %>% collect
   select(EncounterID = ID,
          IndividualID,
          Year,
@@ -159,7 +169,7 @@ tmp_trib <- tbl(con, "TBL_Encounter") %>%
          HydroAreaCode,
          RiverMile,
          EncounterType,
-         FirstCapture,
+#         FirstCapture,
          Length,
          Weight,
          GearTypeCode,
