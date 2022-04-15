@@ -1,0 +1,303 @@
+---
+title: "Bonytail tributary use"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+{
+  library(tidyverse)
+  library(lubridate)
+  library(UCRBtools)
+  library(ggplot2)
+  library(knitr)
+  library(waterData)
+}
+
+theme_set(theme_bw())
+
+`%!in%` <- Negate(`%in%`)
+
+```
+
+```{r data-io, include=FALSE}
+
+# Encounter data
+tmp_enc <- read_tsv("./data/all-rvrs_encounters_20220414.txt")
+
+# Stocking years
+min_year <- year(min(tmp_enc$EncounterDate[tmp_enc$EncounterType == "Stocking"]))
+max_year <- year(max(tmp_enc$EncounterDate[tmp_enc$EncounterType == "Stocking"]))
+
+# USGS Temperature and discharge data
+pr <- importDVs(staid = "09314500",
+                code = "00060",
+                stat = "00003",
+                sdate = paste0(min_year, "-01-01"),
+                edate = paste0(max_year, "-12-31")) %>%
+  rename(discharge = val,
+         date = dates) %>%
+  select(staid, date, discharge) %>%
+  full_join(
+    importDVs(staid = "09314500",
+              code = "00010",
+              stat = "00003",
+              sdate = paste0(min_year, "-01-01"),
+              edate = paste0(max_year, "-12-31")) %>%
+    rename(temp = val,
+           date = dates) %>%
+    select(-qualcode),
+
+            by = c("staid", "date")
+    ) %>%
+  mutate(nm_station = "Price River, at Woodside, UT",
+         cd_rvr = "PR")
+
+```
+
+
+```{r QA, include=FALSE}
+# Assess dataset dimensions
+dim(tmp_enc)
+length(unique(tmp_enc$IndividualID))
+length(unique(tmp_enc$EncounterID))
+
+# Assess flags and notes, superficial QA
+table(tmp_enc$IndividualDBAFlag)
+unique(tmp_enc$EncounterDBAFlagNotes)
+unique(tmp_enc$IndividualDBAFlagNotes)
+unique(tmp_enc$CommonName)
+unique(tmp_enc$DispositionType)
+range(tmp_enc$EncounterDate)
+sum(is.na(tmp_enc$EncounterDate))
+sum(is.na(tmp_enc$EncounterTime))
+
+```
+
+
+```{r restructure, include=FALSE}
+# The dataset is really wide, select relevant cols if helpful
+enc <- tmp_enc %>%
+  mutate(across(EncounterTime, ~ifelse(is.na(.), "00:00:00", as.character(.))),
+         EncounterDateTime = ymd_hms(paste(EncounterDate, EncounterTime))) %>%
+  select(IndividualID,
+         EncounterID,
+         MostRecentTag,
+         TagDeployDate,
+         CommonName,
+         EncounterDate,
+         EncounterDateTime,
+         EncounterType,
+         RiverName,
+         RiverMile,
+         TotalLength,
+         Weight,
+         DispositionType,
+         ArrayName,
+         AntennaCode,
+         AntennaSubArray,
+         SourceHatchery,
+         HarvestType,
+         ReleaseType,
+         YearClass,
+         Mortality,
+         SampleorStockingNumber,
+         ProjectBiologist,
+         Org,
+         Study,
+         Longitude,
+         Latitude,
+         UTMX,
+         UTMY,
+         UTMZone,
+         matches("Notes|Flag"))
+
+```
+
+
+
+```{r, include=FALSE}
+# General information
+table(enc$EncounterType)
+table(enc$ArrayName)
+table(enc$RiverName)
+
+```
+
+
+
+```{r include=FALSE}
+
+# Stocking dates
+stock_date_vec <- unique(tmp_enc$EncounterDate[tmp_enc$EncounterType == "Stocking"])
+stock_dates <- pr %>% 
+  filter(date %in% stock_date_vec) %>% 
+  select(date,
+         discharge_pt = discharge,
+         temp_pt = temp)
+fnl_pr = pr %>% 
+  left_join(stock_dates, by = "date")
+
+# Stocking locations
+unique(enc$RiverMile[enc$EncounterType == "Stocking"])
+unique(enc$EncounterDate[enc$RiverMile == 27.3])
+unique(enc$EncounterDate[enc$RiverMile == 19.4])
+nrow
+# Annual water stats
+water_stats <- list(
+  max = ~ max(.x, na.rm = TRUE),
+  min = ~ min(.x, na.rm = TRUE),
+  median = ~ median(.x, na.rm = TRUE),
+  n = ~ n())
+ 
+w_summary <- pr %>%
+  group_by(year(date)) %>% 
+  summarise(across(.cols = c(discharge), .fns = water_stats),
+            dt_max_flow = format(date[which.max(discharge)], "%d %B %Y"),
+            dt_min_flow = format(date[which.min(discharge)], "%d %B %Y"),
+            .groups = "drop") %>% 
+  mutate_if(is.numeric, ~ format(.x, big.mark = ",")) 
+
+
+```
+
+I spent a little time engineering a dataset capable of answering some of your questions from a frontend query via the STReaMS website. I did not run extensive QAQC on the dataset, just wanted something to explore during our meeting.  There are a large number of Bonytail records in the database.  I selected one tributary for this summary analysis - the Price river.  I looked at the movement of *only individuals stocked into the Price River*, however, incorporated all encounters of these individuals logged in the Price and elsewhere
+
+UDWR-Wahweap fish hatchery is the only facility stocking fish into the Price at present time and have released Bonytail in 2 stocking events. On April 01, 2019, 3572 fish were released at RMI 27.3 and on April 04, 2021, 3451 fish were released at RMI 19.4. The water was too low to stock the Price in 2021. 
+
+STReaMS contians 435,555 encounters of the 7023 individuals stocked near woodside. Because STReaMS logs encounters at 1 minute intervals, the raw data is overly granular for most research questions.  When encounters are aggragate to the "day", the data becomes a bit more managable at 15,651 encounters.
+
+
+
+### Table 1. Encounters by array name and encounter type
+```{r}
+enc %>%
+  group_by(IndividualID, ArrayName, EncounterType) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(ArrayName, EncounterType) %>%
+  summarise(unq_indiv = n(),
+            total_enc = sum(n)) %>% 
+  arrange(desc(unq_indiv)) %>% 
+  kable()
+
+```
+
+
+
+```{r features, include=FALSE}
+summary_ind <- enc %>%
+  group_by(IndividualID) %>%
+  summarise(days_at_lrg = difftime(max(EncounterDate), min(EncounterDate), units = "days"),
+            total_encounters = n(),
+            total_rivers = n_distinct(RiverName),
+            total_arrays = n_distinct(ArrayName),
+            total_det_typ = n_distinct(EncounterType),
+            .groups = "drop")
+
+tmp_mv <- enc %>%
+  select(IndividualID, EncounterID, EncounterType, EncounterDate, EncounterDateTime, RiverName, RiverMile, ArrayName) %>%
+  group_by(IndividualID) %>%
+  arrange(IndividualID, EncounterDateTime) %>%
+  mutate(trans = ifelse(lag(RiverName) == RiverName &
+                          lag(RiverMile) == RiverMile, 0, 1) %>%
+           coalesce(0)) %>%
+  group_by(IndividualID) %>%
+  mutate(trans_order = cumsum(trans) + 1) %>%
+  ungroup()
+
+mv <- tmp_mv %>%
+  group_by(IndividualID, EncounterType, RiverName, RiverMile, ArrayName, trans_order) %>%
+  summarise(across(EncounterDate, list(min = min,
+                                       max = max)),
+            n_encounters = n(),
+            .groups = "drop") %>%
+  group_by(IndividualID) %>%
+  arrange(IndividualID, trans_order) %>%
+  mutate(res_days = difftime(EncounterDate_max, EncounterDate_min, units = "days"),
+         trans_days = difftime(EncounterDate_min, lag(EncounterDate_max), units = "days")) %>%
+  group_by(IndividualID, RiverName) %>%
+  mutate(dist = RiverMile - lag(RiverMile)) %>%
+  ungroup() %>%
+  left_join(summary_ind, by = "IndividualID")
+
+
+```
+
+### Table 2. Resights of fish stocked by year
+
+```{r resight}
+ enc %>% 
+  left_join(summary_ind, by = "IndividualID") %>% 
+  filter(EncounterType == "Stocking") %>% 
+  mutate(stock_enc_only = ifelse(total_encounters == 1, 1, 0)) %>% 
+  group_by(year = year(EncounterDate)) %>% 
+  summarise(stock_enc_only = sum(stock_enc_only),
+            total_stock = n()) %>%
+  mutate(pct_resighted = round(100* (total_stock - stock_enc_only) / total_stock, 1)) %>% 
+  kable()
+```
+
+### Table 3. Number of upstream transitions > 1 mile in the Price River
+```{r}
+up_ids <- mv$IndividualID[!is.na(mv$dist) &
+                            mv$dist > 1]
+dn_ids <- mv$IndividualID[!is.na(mv$dist) &
+                            mv$dist < -1]
+enc %>%
+  filter(EncounterType == "Stocking") %>% 
+
+  mutate(dir = case_when(IndividualID %in% up_ids ~ "up",
+                         IndividualID %in% dn_ids ~ "dn")) %>% 
+  group_by(year = year(EncounterDate),
+           dir) %>% 
+  summarise(n = n(),
+            .groups = "drop") %>% 
+    kable()
+
+```
+
+
+
+### Figure 1. Differences in discharge between years, stocking event marked with blue dot
+```{r}
+fnl_pr %>% 
+  ggplot() +
+  geom_line(aes(x = date, y = discharge)) + 
+  geom_point(aes(x = date, y = discharge_pt), 
+             pch = 21,
+             cex = 4,
+             fill = "dodgerblue") +
+  facet_wrap(~year(date), scales = "free_x")
+
+
+```
+
+###  Figure 2. Differences in water temperature between years, stocking event marked with blue dot
+```{r}
+fnl_pr %>%
+  ggplot() +
+  geom_line(aes(x = date, y = temp)) +
+    geom_point(aes(x = date, y = temp_pt), 
+             pch = 21,
+             cex = 4,
+             fill = "dodgerblue") +
+  facet_wrap(~year(date), scales = "free_x")
+
+  
+```
+
+### Figure 3. Encounter location by transition order
+```{r}
+
+mv %>%
+  ggplot() +
+  geom_bar(aes(x = trans_order, fill = ArrayName)) +
+  facet_wrap(~year(EncounterDate_min))
+
+
+```
+

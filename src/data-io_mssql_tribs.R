@@ -1,9 +1,9 @@
 
 #######################################################
-#          Data io: Fetch data from STReaMS           #
+#       Data io: Fetch data from STReaMS backend      #
 #######################################################
 
-# Fetch data from STReaMS
+# Fetch data from MS SQLserver
 
 # ----- Attach Packages -----
 {
@@ -20,7 +20,7 @@ theme_set(theme_bw())
 # Enter user defined variables
 #----------------------------------------
 # Define hydro area for initial tag deployment
-HYDRO_AREA <- c("SR", "PR", "WH", "DO")
+HYDRO_AREA <- c("PR")
 YEAR <- c(2016:2022)
 TARGET <- "BT"
 
