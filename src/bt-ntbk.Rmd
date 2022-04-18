@@ -1,9 +1,9 @@
 ---
 title: "Bonytail tributary use"
 output:
-  pdf_document: default
   html_document:
     df_print: paged
+  pdf_document: default
 ---
 
 
@@ -16,11 +16,15 @@ knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
   library(ggplot2)
   library(knitr)
   library(waterData)
+  library(sf)
+  library(mapview)
 }
 
 theme_set(theme_bw())
 
 `%!in%` <- Negate(`%in%`)
+
+SQLITE <- "C:/Users/cmichaud/OneDrive - DOI/Documents/Data/Spatial/ucrb_spat_v2.sqlite"
 
 ```
 
@@ -35,6 +39,37 @@ mv_ant <- dat$antenna_transitions
 mv_rvr <- dat$river_transitions
 
 water <- dat$water_data
+
+sf_pia <- read_csv("./data/array_locations.csv") %>% 
+  filter(!(is.na(loc_x) | is.na(loc_y))) %>% 
+  st_as_sf(coords = c("loc_x", "loc_y"),
+           crs = unique(.$epsg))
+
+sf_nhd_pts <- st_read(SQLITE,
+                   layer = "nhd_rmi_pts",
+                   stringsAsFactors = FALSE)
+unique(sf_nhd_pts$nm_rvr)
+
+arrays <- enc %>% 
+  filter(!is.na(ArrayName)) %>% 
+  distinct(RiverName, ArrayName)
+
+enc_loc <- enc %>% 
+  group_by(IndividualID, EncounterType, RiverName, RiverMile) %>% 
+  summarise(n_tot_det = n()) %>% 
+  group_by(EncounterType, RiverName, RiverMile) %>% 
+  summarise(n_tot_det = sum(n_tot_det),
+            n_ind_det =n(),
+            .groups = "drop") %>% 
+  mutate(across(RiverName, ~ifelse(. == "Colorado River" &
+                                     RiverMile < -46, "Colorado River - Lake Powell", .)))
+
+stock_loc <- enc %>% 
+  filter(EncounterType == "Stocking") %>% 
+  group_by(year(EncounterDate), RiverName, RiverMile) %>%
+  summarise(n = n())
+  
+  
 ```
 
 
@@ -62,12 +97,21 @@ w_summary <- water %>%
 ```
 
 ```{r}
-ant_sf <- enc %>% 
-  filter(!is.na(ArrayName)) %>% 
-  group_by(ArrayName, RiverName, RiverMile) %>% 
-  summarise(UTMX = first(UTMX),
-            UTMY = first(UTMY),
-            n = n())
+sf_pia %>% 
+  inner_join(arrays, by = c("RiverName", "ArrayName")) %>% 
+  mapview(zcol = "RiverName")
+```
+
+```{r}
+sf_nhd_pts %>% 
+  inner_join(enc_loc, by = c("nm_rvr" = "RiverName", "rmi_nhd" = "RiverMile")) %>% 
+  mapview(cex = "n_ind_det", zcol = "nm_rvr" )
+```
+
+```{r}
+sf_nhd_pts %>% 
+    inner_join(stock_loc, by = c("nm_rvr" = "RiverName", "rmi_nhd" = "RiverMile")) %>% 
+  mapview()
 
 ```
 

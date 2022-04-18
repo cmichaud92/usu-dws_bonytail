@@ -19,7 +19,7 @@ theme_set(theme_bw())
 
 # User defined variables
 TRIBS <- c("PR")
-GUAGES <- c("Woodside")
+GUAGES <- c("Woodside","Confluence")
 WRITE_TO_DISK = FALSE
 
 #----------------------------------------
