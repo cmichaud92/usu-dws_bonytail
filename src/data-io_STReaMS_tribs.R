@@ -2,6 +2,30 @@
 #       Data io: Fetch data from STReaMS download     #
 #######################################################
 
+
+
+# ----- Attach Packages -----
+{
+  library(tidyverse)
+  library(lubridate)
+  library(waterData)
+  library(UCRBtools)
+  library(ggplot2)
+}
+
+theme_set(theme_bw())
+
+`%!in%` <- Negate(`%in%`)
+
+# User defined variables
+TRIBS <- c("PR")
+GUAGES <- c("Woodside")
+WRITE_TO_DISK = FALSE
+
+#----------------------------------------
+# Data i/o
+#----------------------------------------
+
 # Query the STReaMS GUI: "View and edit data" -> "Encounters"
 
 # FILTER: Species == "Gila elegans",
@@ -17,28 +41,13 @@
 
 # Ignore the Encounters file (we will fetch a more comprehensive file soon)
 
-
-# ----- Attach Packages -----
-{
-  library(tidyverse)
-  library(lubridate)
-  library(UCRBtools)
-  library(ggplot2)
-}
-
-theme_set(theme_bw())
-
-`%!in%` <- Negate(`%in%`)
-
-#----------------------------------------
-# Data i/o
-#----------------------------------------
+# ----- STReaMS ENcounter data -----
 
 # Read in individual data acquired from STReaMS
 tmp_ind <- read_tsv("./data/PR_stocked_individuals_20220414.txt")
 
 table(tmp_ind$Mortality)
-ck <- tmp_ind %>%
+tmp_ind %>%
   filter(Mortality == "Yes")
 # Dataset dimensions
 dim(tmp_ind)
@@ -70,6 +79,7 @@ names(ids) %>%
 
 tmp_enc <- read_tsv("./data/all-rvrs_encounters_20220414.txt")
 
+
 # Assess dataset dimensions
 dim(tmp_enc)
 length(unique(tmp_enc$IndividualID))
@@ -85,7 +95,7 @@ range(tmp_enc$EncounterDate)
 sum(is.na(tmp_enc$EncounterDate))
 sum(is.na(tmp_enc$EncounterTime))
 
-# The dataset is really wide, select relevant cols if helpful
+# Encounter wrangling and feature development
 enc <- tmp_enc %>%
   mutate(across(EncounterTime, ~ifelse(is.na(.), "00:00:00", as.character(.))),
          EncounterDateTime = ymd_hms(paste(EncounterDate, EncounterTime))) %>%
@@ -122,42 +132,43 @@ enc <- tmp_enc %>%
          matches("Notes|Flag"))
 
 
-# General information
-table(enc$EncounterType)
-table(enc$ArrayName)
-table(enc$RiverName)
+# Stocking locations
+unique(enc$RiverMile[enc$EncounterType == "Stocking"])
+unique(enc$EncounterDate[enc$RiverMile == 27.3])
+unique(enc$EncounterDate[enc$RiverMile == 19.4])
 
 
-#--------------------------------
-# Feature engineering
-#--------------------------------
 summary_ind <- enc %>%
   group_by(IndividualID) %>%
   summarise(days_at_lrg = difftime(max(EncounterDate), min(EncounterDate), units = "days"),
-            n_rivers = n_distinct(RiverName),
-            n_arrays = n_distinct(ArrayName),
-            n_det_typ = n_distinct(EncounterType),
+            total_encounters = n(),
+            total_rivers = n_distinct(RiverName),
+            total_arrays = n_distinct(ArrayName, na.rm = TRUE),
+            total_enc_typ = n_distinct(EncounterType),
             .groups = "drop")
 
-mvmt <- enc %>%
+tmp_mv <- enc %>%
   select(IndividualID, EncounterID, EncounterType, EncounterDate, EncounterDateTime, RiverName, RiverMile, ArrayName) %>%
   group_by(IndividualID) %>%
   arrange(IndividualID, EncounterDateTime) %>%
-  mutate(trans = ifelse(lag(RiverName) == RiverName &
-                          lag(RiverMile) == RiverMile, 0, 1) %>%
+  mutate(trans_ant = ifelse(lag(RiverName) == RiverName &
+                               lag(RiverMile) == RiverMile, 0, 1) %>%
+           coalesce(0),
+         trans_rvr = ifelse(lag(RiverName) != RiverName, 1, 0) %>%
            coalesce(0)) %>%
   group_by(IndividualID) %>%
-  mutate(trans_order = cumsum(trans) + 1) %>%
+  mutate(trans_order_ant = cumsum(trans_ant) + 1,
+         trans_order_rvr = cumsum(trans_rvr) + 1) %>%
   ungroup()
 
-mvmt1 <- mvmt %>%
-  group_by(IndividualID, EncounterType, RiverName, RiverMile, ArrayName, trans_order) %>%
+mv_ant <- tmp_mv %>%
+  group_by(IndividualID, EncounterType, RiverName, RiverMile, ArrayName, trans_order_ant) %>%
   summarise(across(EncounterDate, list(min = min,
                                        max = max)),
             n_encounters = n(),
             .groups = "drop") %>%
   group_by(IndividualID) %>%
-  arrange(IndividualID, trans_order) %>%
+  arrange(IndividualID, trans_order_ant) %>%
   mutate(res_days = difftime(EncounterDate_max, EncounterDate_min, units = "days"),
          trans_days = difftime(EncounterDate_min, lag(EncounterDate_max), units = "days")) %>%
   group_by(IndividualID, RiverName) %>%
@@ -166,82 +177,122 @@ mvmt1 <- mvmt %>%
   left_join(summary_ind, by = "IndividualID")
 
 
-
-ck <- mvmt1$IndividualID[mvmt1$dist == 0]
-ck <- mvmt1 %>%
-  filter(dist > 0) %>%
-  distinct(IndividualID) %>%
-  pull(IndividualID)
-
-ck1 <- mvmt1 %>%
-  filter(IndividualID %in% ck)
-
-ck <- summary_ind$IndividualID[summary_ind$n_det_typ == 3]
-ck1 <- mvmt1 %>%
-  filter(IndividualID %in% ck)
-
-mvmt1 %>%
-  ggplot() +
-  geom_bar(aes(x = trans_order, fill = ArrayName))
-
-
-mvmt %>%
-  filter(trans_order == 2) %>%
-  count(ArrayName)
-
-enc %>%
-  group_by(IndividualID, ArrayName, EncounterType) %>%
-  summarise(n = n(), .groups = "drop") %>%
-  group_by(ArrayName, EncounterType) %>%
-  summarise(unq_indiv = n(),
-            total_enc = sum(n))
-
-nrow(enc)
-
-agg_day <- enc %>%
-  count(IndividualID, EncounterDate, RiverName, RiverMile)
-nrow(agg_day)
-
-nrow(filter(agg_day,n >1))
-
-agg_ind <- enc %>%
-  group_by(IndividualID, EncounterDate, RiverName, RiverMile) %>%
-  summarise(n = n(), .groups = "drop") %>%
-  group_by(IndividualID) %>%
-  summarise(across(EncounterDate, list(min,
-                                       max)),
-            n_days_enc = n()) %>%
-  mutate(days_at_large = difftime(EncounterDate_2, EncounterDate_1, units = "days"))
-
-range(agg_ind$days_at_large)
-
-agg_ind_mv <-  enc %>%
-  group_by(IndividualID, RiverName, RiverMile) %>%
-  summarise(n = n(),
-            min_date = min(EncounterDate),
-            max_date = max(EncounterDate),
+mv_rvr <- tmp_mv %>%
+  group_by(IndividualID, RiverName, trans_order_rvr) %>%
+  summarise(across(EncounterDate, list(min = min,
+                                       max = max)),
+            n_encounters = n(),
             .groups = "drop") %>%
-  arrange(IndividualID, desc(max_date)) %>%
   group_by(IndividualID) %>%
-  mutate(days_res = difftime(max_date, min_date, units = "days"),
-         days_mv = difftime(max_date, lead(min_date), units = "days"))
+  arrange(IndividualID, trans_order_rvr) %>%
+  mutate(res_days = difftime(EncounterDate_max, EncounterDate_min, units = "days"),
+         trans_days = difftime(EncounterDate_min, lag(EncounterDate_max), units = "days")) %>%
+  ungroup() %>%
+  left_join(summary_ind, by = "IndividualID")
 
-range(agg_ind_mv$days_res)
-range(agg_ind_mv$days_mv, na.rm = TRUE)
 
-enc %>%
-  count(IndividualID, EncounterDate) %>%
-  ggplot() +
-  geom_histogram(aes(x = n)) +
-  scale_y_log10()
 
-enc %>%
-  count(IndividualID, EncounterDate) %>%
-  filter(n < 10) %>%
-  sum(.$n == 1)
-  ggplot() +
-  geom_histogram(aes(x = n))# +
-  scale_y_log10()
+
+
+# Stocking years
+min_year <- year(min(tmp_enc$EncounterDate[tmp_enc$EncounterType == "Stocking"]))
+max_year <- year(max(tmp_enc$EncounterDate[tmp_enc$EncounterType == "Stocking"]))
+
+
+# ----- USGS Hydrology data -----
+
+guage <- tribble(
+  ~cd_rvr, ~nm_guage, ~staid,
+  "GR", "Green River, UT", "09315000",
+  "GR", "Ouray, UT", "09272400",
+  "GR", "Jensen, UT", "09261000",
+  "WH", "Watson, UT", "09306500",
+  "PR", "Woodside, UT", "09314500",
+  "SR", "Confluence with the Green River", "09328910",
+  "SR", "Near Green River, UT", "09328500",
+  "CO", "Near Cicso (Dewey), UT", "09180500",
+  "CO", "UT/CO State Line", "09163500",
+  "DO", "Near Cisco (Dewey), UT", "09180000",
+)
+
+# USGS Temperature and discharge data
+
+tgt <- guage %>%
+  filter(cd_rvr %in% TRIBS &
+           grepl(paste(GUAGES, collapse = "|"),
+                 nm_guage,
+                 ignore.case = TRUE)) %>%
+  pull(staid)
+
+
+w <- map_df(tgt, ~importDVs(staid = .x,
+                            code = "00060",
+                            stat = "00003",
+                            sdate = paste0(min_year, "-01-01"),
+                            edate = paste0(max_year, "-12-31"))) %>%
+  rename(discharge = val,
+         date = dates,
+         discharge_qualcode = qualcode)
+
+t <- map_df(tgt, ~importDVs(staid = .x,
+                            code = "00010",
+                            stat = "00003",
+                            sdate = paste0(min_year, "-01-01"),
+                            edate = paste0(max_year, "-12-31"))) %>%
+  rename(temperature = val,
+         date = dates,
+         temperature_qualcode = qualcode)
+
+water <- left_join(w, t, by = c("staid", "date")) %>%
+  left_join(guage, by = "staid") %>%
+  select(cd_rvr,
+         nm_guage,
+         date,
+         discharge,
+         temperature,
+         staid,
+         matches("qualcode"))
+
+# Stocking dates
+tmp_stock_date <- enc %>%
+  filter(EncounterType == "Stocking") %>%
+  distinct(RiverName, EncounterDate)
+
+stock_dates <- water %>%
+  filter(date %in% tmp_stock_date$EncounterDate) %>%
+  select(date,
+         cd_rvr,
+         discharge_pt = discharge,
+         temp_pt = temperature)
+
+fnl_water <-  water %>%
+  left_join(stock_dates, by = c("date", "cd_rvr"))
+
+
+
+#---------------------------------------
+# Finalize data and write to disk
+#---------------------------------------
+
+#Build list
+fnl_dat <- list(encounters = enc,
+                antenna_transitions = mv_ant,
+                river_transitions = mv_rvr,
+                water_data = fnl_water)
+
+# Write data to disk if "TRUE"
+if (WRITE_TO_DISK == TRUE) {
+  # Write list to csv
+  names(fnl_dat) %>%
+    walk(~write_csv(fnl_dat[[.]], paste0("./data/Bonytail_",
+                                  .,
+                                  ".csv"),
+                    na = ""))
+
+  # Write list to Rds
+  write_rds(fnl_dat, "./data/Bonytail-research-data.Rds")
+}
+## END
 
 
 
