@@ -13,15 +13,17 @@
   library(ggplot2)
 }
 
+{
 theme_set(theme_bw())
 
 `%!in%` <- Negate(`%in%`)
 
 # User defined variables
 TRIBS <- c("PR")
-GUAGES <- c("Woodside","Confluence")
+GUAGES <- c("Woodside")
 WRITE_TO_DISK = FALSE
-
+#WRITE_TO_DISK = TRUE
+}
 #----------------------------------------
 # Data i/o
 #----------------------------------------
@@ -77,7 +79,7 @@ names(ids) %>%
 # The Individuals file should be == to the one you previously downloaded so you
 # can ignore it...
 
-tmp_enc <- read_tsv("./data/all-rvrs_encounters_20220414.txt")
+tmp_enc <- read_tsv("./data/all-rvrs_encounters_20220418.txt")
 
 
 # Assess dataset dimensions
@@ -107,6 +109,7 @@ enc <- tmp_enc %>%
          EncounterDate,
          EncounterDateTime,
          EncounterType,
+         GearType,
          RiverName,
          RiverMile,
          TotalLength,
@@ -157,8 +160,8 @@ tmp_mv <- enc %>%
          trans_rvr = ifelse(lag(RiverName) != RiverName, 1, 0) %>%
            coalesce(0)) %>%
   group_by(IndividualID) %>%
-  mutate(trans_order_ant = cumsum(trans_ant) + 1,
-         trans_order_rvr = cumsum(trans_rvr) + 1) %>%
+  mutate(trans_order_ant = cumsum(trans_ant),
+         trans_order_rvr = cumsum(trans_rvr)) %>%
   ungroup()
 
 mv_ant <- tmp_mv %>%
@@ -172,7 +175,9 @@ mv_ant <- tmp_mv %>%
   mutate(res_days = difftime(EncounterDate_max, EncounterDate_min, units = "days"),
          trans_days = difftime(EncounterDate_min, lag(EncounterDate_max), units = "days")) %>%
   group_by(IndividualID, RiverName) %>%
-  mutate(dist = RiverMile - lag(RiverMile)) %>%
+  mutate(dist = RiverMile - lag(RiverMile),
+         dir = case_when(dist > 0 ~ "up",
+                         dist < 0 ~ "dn")) %>%
   ungroup() %>%
   left_join(summary_ind, by = "IndividualID")
 
@@ -192,6 +197,23 @@ mv_rvr <- tmp_mv %>%
 
 
 
+mx_ant <- enc %>%
+#  filter(!is.na(ArrayName)) %>%
+  select(IndividualID, EncounterID, ArrayName) %>%
+  group_by(IndividualID, ArrayName) %>%
+  summarise(n = n(),
+            .groups = "drop") %>%
+  mutate(det = 1) %>%
+  complete(nesting(IndividualID),
+           nesting(ArrayName),
+           fill = list(det = 0)) %>%
+  filter(!is.na(ArrayName)) %>%
+  select(-n) %>%
+  pivot_wider(names_from = ArrayName,
+              values_from = det) %>%
+  summarise(across(`Canal Fish Screen`:Woodside, sum),
+            n_ind = n()) %>%
+  mutate(across(`Canal Fish Screen`:Woodside), list(prop = ~./n_ind))
 
 
 # Stocking years
@@ -201,6 +223,7 @@ max_year <- year(max(tmp_enc$EncounterDate[tmp_enc$EncounterType == "Stocking"])
 
 # ----- USGS Hydrology data -----
 
+# Build into UCRBtools pkg for easy reuse
 guage <- tribble(
   ~cd_rvr, ~nm_guage, ~staid,
   "GR", "Green River, UT", "09315000",
@@ -291,6 +314,8 @@ if (WRITE_TO_DISK == TRUE) {
 
   # Write list to Rds
   write_rds(fnl_dat, "./data/Bonytail-research-data.Rds")
+}else {
+  message("Data not writen to disk, set WRITE_TO_DISK == TRUE to capture data")
 }
 ## END
 

@@ -28,7 +28,7 @@ SQLITE <- "C:/Users/cmichaud/OneDrive - DOI/Documents/Data/Spatial/ucrb_spat_v2.
 
 ```
 
-```{r data-io, include=FALSE}
+```{r aspatial-data-io, include=FALSE}
 
 dat <- read_rds("./data/Bonytail-research-data.Rds")
 
@@ -39,16 +39,29 @@ mv_ant <- dat$antenna_transitions
 mv_rvr <- dat$river_transitions
 
 water <- dat$water_data
+```
 
+
+```{R spatial-data-io, include=FALSE}
 sf_pia <- read_csv("./data/array_locations.csv") %>% 
   filter(!(is.na(loc_x) | is.na(loc_y))) %>% 
   st_as_sf(coords = c("loc_x", "loc_y"),
            crs = unique(.$epsg))
+sf_ps <- enc %>% 
+  filter(GearType == "Submersible") %>% 
+  group_by(year(EncounterDate), RiverName, RiverMile, UTMX, UTMY) %>% 
+  summarise(n_unq_ind = n_distinct(IndividualID),
+            n_tot_enc = n()) %>% 
+  mutate(ArrayName = "Submersible") %>% 
+  st_as_sf(coords = c("UTMX", "UTMY"),
+           crs = 32612)
 
 sf_nhd_pts <- st_read(SQLITE,
                    layer = "nhd_rmi_pts",
                    stringsAsFactors = FALSE)
-unique(sf_nhd_pts$nm_rvr)
+```
+
+```{r data-wrangle, inlsude=FALSE}
 
 arrays <- enc %>% 
   filter(!is.na(ArrayName)) %>% 
@@ -74,7 +87,8 @@ stock_loc <- enc %>%
 
 
 
-```{r include=FALSE}
+
+```{r Water-data, include=FALSE}
 
 # Annual water stats
 water_stats <- list(
@@ -97,23 +111,24 @@ w_summary <- water %>%
 ```
 
 ```{r}
-sf_pia %>% 
+map1 <- sf_pia %>% 
   inner_join(arrays, by = c("RiverName", "ArrayName")) %>% 
-  mapview(zcol = "RiverName")
+  bind_rows(sf_ps) %>% 
+  mapview(zcol = "RiverName", layer.name = "Antenna locations")
+map2 <- sf_nhd_pts %>% 
+  inner_join(stock_loc, by = c("nm_rvr" = "RiverName", "rmi_nhd" = "RiverMile")) %>% 
+  mapview(col.regions = "red", alpha.regions = 1, layer.name = "Stocking locations")
+
+map1 + map2
+
 ```
 
 ```{r}
 sf_nhd_pts %>% 
   inner_join(enc_loc, by = c("nm_rvr" = "RiverName", "rmi_nhd" = "RiverMile")) %>% 
-  mapview(cex = "n_ind_det", zcol = "nm_rvr" )
+  mapview(cex = "n_ind_det", zcol = "nm_rvr", layer.name = "Encounter locations" )
 ```
 
-```{r}
-sf_nhd_pts %>% 
-    inner_join(stock_loc, by = c("nm_rvr" = "RiverName", "rmi_nhd" = "RiverMile")) %>% 
-  mapview()
-
-```
 
 I spent a little time engineering a dataset capable of answering some of your questions from a frontend query via the STReaMS website. I did not run extensive QAQC on the dataset, just wanted something to explore during our meeting.  There are a large number of Bonytail records in the database.  I selected one tributary for this summary analysis - the Price river.  I looked at the movement of *only individuals stocked into the Price River*, however, incorporated all encounters of these individuals logged in the Price and elsewhere
 
@@ -136,6 +151,45 @@ enc %>%
 
 ```
 
+```{r}
+enc %>% 
+  ggplot() +
+  geom_histogram(aes(x = EncounterDate)) +
+  facet_wrap(~TagDeployDate)
+```
+
+
+
+```{r}
+ck <- enc %>% 
+  mutate(mo = month(EncounterDate),
+         yr = year(EncounterDate)) %>% 
+  group_by(yr, mo, IndividualID, ArrayName) %>% 
+  summarise(n_enc = n()) 
+
+ids <- unique(ck$IndividualID[ck$n_enc > 40000])
+
+ck1 <- enc %>% 
+  filter(IndividualID != ids)
+
+ck1 %>% 
+  ggplot() +
+  geom_histogram(aes(x = EncounterDate)) +
+  facet_wrap(~TagDeployDate)
+
+ck2 <- ck1 %>% 
+  filter(year(EncounterDate) == 2021) %>% 
+  group_by(IndividualID) %>% 
+  summarise(n_enc = n())
+
+ck2 <- enc %>% 
+  filter(year(EncounterDate) == 2021 &
+           IndividualID == 1342003)
+ck2 %>% 
+  ggplot() +
+  geom_histogram(aes(x = EncounterDate))
+
+```
 
 
 ### Table 2. Resights of fish stocked by year
@@ -153,18 +207,11 @@ enc %>%
   kable()
 ```
 
-### Table 3. Number of upstream transitions > 1 mile in the Price River
+### Table 3. Direction of within river antenna transitions. 
 ```{r}
-up_ids <- mv_ant$IndividualID[!is.na(mv_ant$dist) &
-                            mv_ant$dist > 1]
-dn_ids <- mv_ant$IndividualID[!is.na(mv_ant$dist) &
-                            mv_ant$dist < -1]
-enc %>%
-  filter(EncounterType == "Stocking") %>% 
-
-  mutate(dir = case_when(IndividualID %in% up_ids ~ "up",
-                         IndividualID %in% dn_ids ~ "dn")) %>% 
-  group_by(year = year(EncounterDate),
+mv_ant %>%
+  filter(!is.na(dir)) %>% 
+  group_by(year = year(EncounterDate_min),
            dir) %>% 
   summarise(n = n(),
             .groups = "drop") %>% 
@@ -237,6 +284,6 @@ mv_rvr %>%
   ggplot() +
   geom_histogram(aes(x = EncounterDate_max, fill = RiverName), color = "black") +
   facet_wrap(~year(EncounterDate_min), scales = "free_x") 
-
+table(mv_rvr$RiverName[mv_rvr$trans_order_rvr == 3])
 ```
 
